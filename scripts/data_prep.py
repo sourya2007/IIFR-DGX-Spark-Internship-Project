@@ -49,7 +49,8 @@ def create_pairs(df, stats, features_in, features_out):
 
         lbl = torch.full((MAX_SEQ_LENGTH,), -100, dtype=torch.long)
         input_end = 1 + len(features_in)
-        lbl[input_end:n] = seq[input_end:n]
+        for p in range(input_end - 1, min(n - 1, MAX_SEQ_LENGTH - 1)):
+            lbl[p] = seq[p + 1]
 
         input_ids_list.append(seq)
         labels_list.append(lbl)
