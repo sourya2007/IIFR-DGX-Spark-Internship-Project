@@ -7,7 +7,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from config import PLOTS_DIR, MODEL_DIR, INPUT_POLLUTANTS
-from scripts.predict import load_model, predict_aqi
+from scripts.aqi.predict import load_model, predict_aqi
 
 LABELS = {"pm2_5": "PM2.5 (\u03bcg/m\u00b3)", "pm10": "PM10 (\u03bcg/m\u00b3)",
            "co": "CO (\u03bcg/m\u00b3)", "no2": "NO2 (\u03bcg/m\u00b3)"}
