@@ -6,15 +6,12 @@ MODEL_DIR = BASE_DIR / "aqi_model"
 PLOTS_DIR = BASE_DIR / "plots"
 DATA_OUT_DIR = BASE_DIR / "data_prep_output"
 
-LOCATION = "Anand Vihar"
-CONTEXT_HOURS = 12
-HORIZON = 1
 MAX_SEQ_LENGTH = 256
 
-FEATURES = ["temp_c", "humidity", "pressure_mb", "windspeed_kph",
-            "pm2_5", "pm10", "co", "no2", "aqi_index"]
-TARGETS = ["aqi_index", "pm2_5"]
-N_FEATURES = len(FEATURES)
+INPUT_POLLUTANTS = ["pm2_5", "pm10", "co", "no2"]
+TARGETS = ["aqi_index"]
+ALL_FEATURES = ["temp_c", "humidity", "pressure_mb", "windspeed_kph",
+                "pm2_5", "pm10", "co", "no2", "aqi_index"]
 
 TOKEN_PAD = 103
 TOKEN_SEP = 102
@@ -24,17 +21,19 @@ VALUE_RANGE = 101
 
 D_MODEL = 128
 N_HEAD = 4
-N_LAYER = 4
+N_LAYER = 6
 D_FF = 512
 DROPOUT = 0.1
 
-BATCH_SIZE = 16
-GRAD_ACCUM_STEPS = 2
-LEARNING_RATE = 3e-4
-EPOCHS = 7
+BATCH_SIZE = 32
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 0.01
+MAX_EPOCHS = 20
+EARLY_STOP_PATIENCE = 5
+GRAD_CLIP = 1.0
 FP16 = True
 TEMPERATURE = 0.7
-MAX_GEN_TOKENS = 20
+N_GENERATIONS = 5
 
 TRAIN_SPLIT = 0.8
 RANDOM_SEED = 42
