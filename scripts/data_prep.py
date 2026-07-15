@@ -5,13 +5,16 @@ from pathlib import Path
 
 from config import DATA_FILE, LOCATION, FEATURES, TARGETS, CONTEXT_HOURS, TRAIN_SPLIT, RANDOM_SEED
 
+FEATURE_SHORT = ["t", "h", "p", "w", "P25", "P10", "CO", "NO2", "AQI"]
+FEATURE_ORDER = list(zip(FEATURES, FEATURE_SHORT))
+
 def load_and_filter(path):
     df = pd.read_csv(path)
     assert not df.empty, "Dataset is empty"
     df["datetime"] = pd.to_datetime(df["date_ist"] + " " + df["time_ist"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["datetime"]).sort_values("datetime")
     df = df[df["location"] == LOCATION].reset_index(drop=True)
-    assert len(df) > CONTEXT_HOURS + 2, f"Not enough rows for {LOCATION}"
+    assert len(df) > CONTEXT_HOURS + 2
     return df
 
 def compute_norm_params(df, features):
@@ -22,55 +25,48 @@ def compute_norm_params(df, features):
     return stats
 
 def normalize(val, stats, f):
-    scaled = (val - stats[f]["min"]) / stats[f]["range"]
-    return int(round(scaled * 100))
+    return int(round((val - stats[f]["min"]) / stats[f]["range"] * 100))
 
 def denormalize(scaled, stats, f):
     return scaled / 100.0 * stats[f]["range"] + stats[f]["min"]
 
-def make_token(row, stats, features):
-    parts = []
-    for f in features:
-        short = {"temp_c": "t", "humidity": "h", "pressure_mb": "p", "windspeed_kph": "w",
-                 "pm2_5": "P25", "pm10": "P10", "co": "CO", "no2": "NO2", "aqi_index": "AQI"}[f]
-        v = normalize(row[f], stats, f)
-        parts.append(f"{short}:{v}")
-    return " ".join(parts)
+def make_token(row, stats):
+    return "_".join(str(normalize(row[f], stats, f)) for f, _ in FEATURE_ORDER)
 
-def create_sequences(df, stats, features, context):
-    texts, targets = [], []
+def create_sequences(df, stats, context):
+    X, Y = [], []
     for i in range(len(df) - context):
-        inp_rows = df.iloc[i:i + context]
-        tgt_row = df.iloc[i + context]
-        inp_tokens = [make_token(r, stats, features) for r in inp_rows.to_dict("records")]
-        tgt_tokens = make_token(tgt_row, stats, features)
-        texts.append(" ".join(inp_tokens))
-        targets.append(tgt_tokens)
-    return texts, targets
+        inp_hours = [make_token(df.iloc[i + j], stats) for j in range(context)]
+        tgt_hour = make_token(df.iloc[i + context], stats)
+        X.append(f"In:{context} {' '.join(inp_hours)}")
+        Y.append(tgt_hour)
+    return X, Y
 
 def run():
     print("[data_prep] Loading dataset...")
     df = load_and_filter(DATA_FILE)
     print(f"  Rows after filter: {len(df)}")
 
-    params = compute_norm_params(df.iloc[:int(len(df) * TRAIN_SPLIT)], FEATURES)
+    split_idx = int(len(df) * TRAIN_SPLIT)
+    train_df = df.iloc[:split_idx]
+    params = compute_norm_params(train_df, FEATURES)
     print(f"  Normalization stats computed from training split")
 
-    texts, targets = create_sequences(df, params, FEATURES, CONTEXT_HOURS)
-    X_full = texts
-    y_full = targets
-
-    split_idx = int(len(X_full) * TRAIN_SPLIT)
-    X_train, X_val = X_full[:split_idx], X_full[split_idx:]
-    y_train, y_val = y_full[:split_idx], y_full[split_idx:]
+    X_full, y_full = create_sequences(df, params, CONTEXT_HOURS)
+    X_train, X_val = X_full[:split_idx - CONTEXT_HOURS], X_full[split_idx - CONTEXT_HOURS:]
+    y_train, y_val = y_full[:split_idx - CONTEXT_HOURS], y_full[split_idx - CONTEXT_HOURS:]
     print(f"  Train sequences: {len(X_train)}, Val sequences: {len(X_val)}")
 
     out_dir = Path(__file__).parent.parent / "data_prep_output"
     out_dir.mkdir(exist_ok=True)
-    np.savetxt(out_dir / "X_train.txt", X_train, fmt="%s", encoding="utf-8")
-    np.savetxt(out_dir / "X_val.txt", X_val, fmt="%s", encoding="utf-8")
-    np.savetxt(out_dir / "y_train.txt", y_train, fmt="%s", encoding="utf-8")
-    np.savetxt(out_dir / "y_val.txt", y_val, fmt="%s", encoding="utf-8")
+    def save_lines(path, lines):
+        with open(path, "w", encoding="utf-8") as f:
+            for line in lines:
+                f.write(line + "\n")
+    save_lines(out_dir / "X_train.txt", X_train)
+    save_lines(out_dir / "X_val.txt", X_val)
+    save_lines(out_dir / "y_train.txt", y_train)
+    save_lines(out_dir / "y_val.txt", y_val)
     with open(out_dir / "norm_params.json", "w") as f:
         json.dump(params, f)
 

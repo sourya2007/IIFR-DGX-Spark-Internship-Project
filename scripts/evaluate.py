@@ -6,26 +6,25 @@ import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from config import ADAPTER_DIR, MODEL_NAME, MAX_SEQ_LENGTH, TEMPERATURE, MAX_GEN_TOKENS, FEATURES, TARGETS
+from config import ADAPTER_DIR, MODEL_NAME, MAX_SEQ_LENGTH, TEMPERATURE, MAX_GEN_TOKENS, FEATURES
 
-def parse_generated(text):
-    aqi = re.search(r"AQI:(\d+)", text)
-    p25 = re.search(r"P25:(\d+)", text)
-    return {"aqi_index": int(aqi.group(1)) if aqi else None,
-            "pm2_5": int(p25.group(1)) if p25 else None}
+FEATURE_ORDER = list(zip(FEATURES, ["t", "h", "p", "w", "P25", "P10", "CO", "NO2", "AQI"]))
 
-def denormalize_val(scaled, params, f):
-    s = params[f]
-    if scaled is None:
-        return None
-    return scaled / 100.0 * s["range"] + s["min"]
+def parse_hour(text):
+    nums = re.findall(r'\d+', text)
+    if len(nums) >= 9:
+        return [int(n) for n in nums[-9:]]
+    return None
+
+def denormalize_vals(scaled_list, params):
+    return {f: scaled / 100.0 * params[f]["range"] + params[f]["min"]
+            for f, scaled in zip(FEATURES, scaled_list)}
 
 def run(data_dir):
     print("[evaluate] Loading model and adapter...")
     base = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
     model = PeftModel.from_pretrained(base, ADAPTER_DIR)
     tokenizer = AutoTokenizer.from_pretrained(ADAPTER_DIR)
-
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = model.to(device)
     model.eval()
@@ -33,60 +32,52 @@ def run(data_dir):
     with open(os.path.join(data_dir, "norm_params.json")) as f:
         params = json.load(f)
 
-    X_val = np.loadtxt(os.path.join(data_dir, "X_val.txt"), dtype=str, encoding="utf-8").tolist()
-    y_val = np.loadtxt(os.path.join(data_dir, "y_val.txt"), dtype=str, encoding="utf-8").tolist()
+    def load_lines(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return [line.strip() for line in f if line.strip()]
+    X_val = load_lines(os.path.join(data_dir, "X_val.txt"))
+    y_val = load_lines(os.path.join(data_dir, "y_val.txt"))
 
-    preds_list, actuals_list = [], []
+    pred_list, actual_list = [], []
     print(f"  Running inference on {len(X_val)} validation samples...")
 
     for i, (inp, actual_str) in enumerate(zip(X_val, y_val)):
-        prompt = f"Input: {inp}\nTarget:"
+        prompt = f"{inp} | "
         enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=MAX_SEQ_LENGTH).to(device)
         with torch.no_grad():
-            out = model.generate(
-                **enc,
-                max_new_tokens=MAX_GEN_TOKENS,
-                temperature=TEMPERATURE,
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id,
-            )
-        generated = tokenizer.decode(out[0], skip_special_tokens=True)
-        # strip the input prompt
-        gen_part = generated[len(prompt):].strip()
-        pred = parse_generated(gen_part)
+            out = model.generate(**enc, max_new_tokens=MAX_GEN_TOKENS, temperature=TEMPERATURE,
+                                 do_sample=True, pad_token_id=tokenizer.eos_token_id)
+        gen = tokenizer.decode(out[0], skip_special_tokens=True)
+        gen_part = gen[len(prompt):].strip()
 
-        actual = parse_generated(actual_str)
-        if pred["aqi_index"] is not None and actual["aqi_index"] is not None:
-            preds_list.append({
-                "aqi_index": denormalize_val(pred["aqi_index"], params, "aqi_index"),
-                "pm2_5": denormalize_val(pred["pm2_5"], params, "pm2_5"),
-            })
-            actuals_list.append({
-                "aqi_index": denormalize_val(actual["aqi_index"], params, "aqi_index"),
-                "pm2_5": denormalize_val(actual["pm2_5"], params, "pm2_5"),
-            })
+        pred_nums = parse_hour(gen_part)
+        actual_nums = parse_hour(actual_str)
+        if pred_nums and actual_nums:
+            pred_list.append(denormalize_vals(pred_nums, params))
+            actual_list.append(denormalize_vals(actual_nums, params))
 
-    pred_aqi = np.array([p["aqi_index"] for p in preds_list])
-    act_aqi = np.array([a["aqi_index"] for a in actuals_list])
-    pred_pm = np.array([p["pm2_5"] for p in preds_list])
-    act_pm = np.array([a["pm2_5"] for a in actuals_list])
+    aqi_pred = np.array([p["aqi_index"] for p in pred_list])
+    aqi_act = np.array([a["aqi_index"] for a in actual_list])
+    pm_pred = np.array([p["pm2_5"] for p in pred_list])
+    pm_act = np.array([a["pm2_5"] for a in actual_list])
 
-    mae_aqi = np.mean(np.abs(pred_aqi - act_aqi))
-    rmse_aqi = np.sqrt(np.mean((pred_aqi - act_aqi) ** 2))
-    mae_pm = np.mean(np.abs(pred_pm - act_pm))
-    rmse_pm = np.sqrt(np.mean((pred_pm - act_pm) ** 2))
+    mae_aqi = float(np.mean(np.abs(aqi_pred - aqi_act)))
+    rmse_aqi = float(np.sqrt(np.mean((aqi_pred - aqi_act) ** 2)))
+    mae_pm = float(np.mean(np.abs(pm_pred - pm_act)))
+    rmse_pm = float(np.sqrt(np.mean((pm_pred - pm_act) ** 2)))
 
-    print(f"\n  === Validation Metrics ===")
+    print(f"\n  {'='*42}")
     print(f"  {'Metric':<15} {'AQI':<12} {'PM2.5':<12}")
     print(f"  {'-'*39}")
     print(f"  {'MAE':<15} {mae_aqi:<12.2f} {mae_pm:<12.2f}")
     print(f"  {'RMSE':<15} {rmse_aqi:<12.2f} {rmse_pm:<12.2f}")
 
-    print(f"\n  === Sample Predictions (first 5) ===")
+    print(f"\n  {'='*62}")
     print(f"  {'#':<4} {'Actual AQI':<12} {'Pred AQI':<12} {'Actual PM2.5':<14} {'Pred PM2.5':<12}")
     print(f"  {'-'*54}")
-    for i in range(min(5, len(preds_list))):
-        print(f"  {i:<4} {act_aqi[i]:<12.1f} {pred_aqi[i]:<12.1f} {act_pm[i]:<14.1f} {pred_pm[i]:<12.1f}")
+    for i in range(min(5, len(pred_list))):
+        print(f"  {i:<4} {aqi_act[i]:<12.1f} {aqi_pred[i]:<12.1f} {pm_act[i]:<14.1f} {pm_pred[i]:<12.1f}")
+    print()
 
     return {"mae_aqi": mae_aqi, "rmse_aqi": rmse_aqi, "mae_pm": mae_pm, "rmse_pm": rmse_pm}
 
