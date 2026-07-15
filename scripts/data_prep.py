@@ -8,7 +8,7 @@ from config import DATA_FILE, LOCATION, FEATURES, TARGETS, CONTEXT_HOURS, TRAIN_
 def load_and_filter(path):
     df = pd.read_csv(path)
     assert not df.empty, "Dataset is empty"
-    df["datetime"] = pd.to_datetime(df["date_ist"] + " " + df["time_ist"], dayfirst=False, errors="coerce")
+    df["datetime"] = pd.to_datetime(df["date_ist"] + " " + df["time_ist"], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["datetime"]).sort_values("datetime")
     df = df[df["location"] == LOCATION].reset_index(drop=True)
     assert len(df) > CONTEXT_HOURS + 2, f"Not enough rows for {LOCATION}"
