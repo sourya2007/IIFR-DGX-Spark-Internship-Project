@@ -1,52 +1,39 @@
-import re
 import json
 import torch
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-from config import MODEL_NAME, MAX_SEQ_LENGTH, TEMPERATURE, MAX_GEN_TOKENS, FEATURES
-
-FEATURE_SHORT = ["t", "h", "p", "w", "P25", "P10", "CO", "NO2", "AQI"]
+from tinygpt import TinyGPT
+from config import VOCAB_SIZE, D_MODEL, N_HEAD, N_LAYER, D_FF, MAX_SEQ_LENGTH, \
+    DROPOUT, N_FEATURES, FEATURES, TOKEN_START, TOKEN_SEP, MODEL_DIR
 
 def load():
-    base = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
-    model = PeftModel.from_pretrained(base, "aqi_lora_adapter")
-    tokenizer = AutoTokenizer.from_pretrained("aqi_lora_adapter")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = TinyGPT(VOCAB_SIZE, D_MODEL, N_HEAD, N_LAYER, D_FF, MAX_SEQ_LENGTH, DROPOUT)
+    model.load_state_dict(torch.load(MODEL_DIR / "best.pt", map_location=device, weights_only=True))
+    model.to(device)
     model.eval()
     with open("data_prep_output/norm_params.json") as f:
         params = json.load(f)
-    if torch.cuda.is_available():
-        model = model.to("cuda")
-    return model, tokenizer, params
+    return model, params, device
 
-def make_token(row, stats):
-    vals = []
-    for f in FEATURES:
-        scaled = int(round((row[f] - stats[f]["min"]) / stats[f]["range"] * 100))
-        vals.append(str(scaled))
-    return "_".join(vals)
-
-def predict(model, tokenizer, params, input_rows):
-    tokens = [make_token(r, params) for r in input_rows]
-    prompt = f"In:{len(input_rows)} {' '.join(tokens)} | "
-    enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=MAX_SEQ_LENGTH)
-    device = next(model.parameters()).device
-    enc = {k: v.to(device) for k, v in enc.items()}
+def predict(model, params, device, input_rows):
+    stats = params
+    tokens = [TOKEN_START]
+    for row in input_rows:
+        for f in FEATURES:
+            scaled = int(round((row[f] - stats[f]["min"]) / stats[f]["range"] * 100))
+            tokens.append(scaled)
+    inp = torch.tensor([tokens], dtype=torch.long, device=device)
     with torch.no_grad():
-        out = model.generate(**enc, max_new_tokens=MAX_GEN_TOKENS, temperature=TEMPERATURE,
-                             do_sample=True, pad_token_id=tokenizer.eos_token_id)
-    gen = tokenizer.decode(out[0], skip_special_tokens=True)
-    gen_part = gen[len(prompt):].strip()
-    nums = re.findall(r'\d+', gen_part)
-    if len(nums) >= 9:
-        nums = [int(n) for n in nums[-9:]]
-        result = {}
-        for i, f in enumerate(FEATURES):
-            result[f] = nums[i] / 100.0 * params[f]["range"] + params[f]["min"]
-        result["raw"] = gen_part
-        return result
-    return {"error": "could not parse", "raw": gen_part}
+        out = model.generate(inp, max_new_tokens=N_FEATURES + 2, temperature=1.0)
+    gen = out[0, len(tokens):].tolist()
+    gen = [t for t in gen if t < 100]
+    result = {}
+    for i, f in enumerate(FEATURES):
+        if i < len(gen):
+            result[f] = gen[i] / 100.0 * stats[f]["range"] + stats[f]["min"]
+        else:
+            result[f] = None
+    return result
 
 if __name__ == "__main__":
-    model, tokenizer, params = load()
-    print("Inference ready. Pass 12-row list of dicts with feature keys to predict().")
+    model, params, device = load()
+    print("Ready. Call predict(model, params, device, [12 dicts with feature keys])")

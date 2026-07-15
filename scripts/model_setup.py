@@ -1,31 +1,25 @@
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
 
-from config import MODEL_NAME, LORA_R, LORA_ALPHA, LORA_DROPOUT, LORA_TARGET_MODULES, MAX_SEQ_LENGTH
+from tinygpt import TinyGPT
+from config import VOCAB_SIZE, D_MODEL, N_HEAD, N_LAYER, D_FF, MAX_SEQ_LENGTH, DROPOUT
 
 def setup():
-    print("[model_setup] Loading tokenizer...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    tokenizer.pad_token = tokenizer.eos_token
-    tokenizer.pad_token_id = tokenizer.eos_token_id
-
-    print(f"  Loading {MODEL_NAME}...")
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
-
-    lora_config = LoraConfig(
-        task_type=TaskType.CAUSAL_LM,
-        r=LORA_R,
-        lora_alpha=LORA_ALPHA,
-        lora_dropout=LORA_DROPOUT,
-        target_modules=LORA_TARGET_MODULES,
+    print("[model_setup] Building TinyGPT from scratch...")
+    model = TinyGPT(
+        vocab_size=VOCAB_SIZE,
+        d_model=D_MODEL,
+        n_head=N_HEAD,
+        n_layer=N_LAYER,
+        d_ff=D_FF,
+        max_seq_len=MAX_SEQ_LENGTH,
+        dropout=DROPOUT,
     )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  Total params: {n_params:,}")
 
     torch.set_float32_matmul_precision("high")
-
-    return model, tokenizer
+    return model
 
 if __name__ == "__main__":
-    setup()
+    m = setup()
+    print(m)

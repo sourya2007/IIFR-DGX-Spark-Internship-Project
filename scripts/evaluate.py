@@ -1,60 +1,69 @@
 import os
-import re
 import json
 import numpy as np
 import torch
-from peft import PeftModel
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from config import ADAPTER_DIR, MODEL_NAME, MAX_SEQ_LENGTH, TEMPERATURE, MAX_GEN_TOKENS, FEATURES
+from config import MODEL_DIR, VOCAB_SIZE, D_MODEL, N_HEAD, N_LAYER, D_FF, \
+    MAX_SEQ_LENGTH, DROPOUT, MAX_GEN_TOKENS, N_FEATURES, FEATURES, \
+    TOKEN_START, TOKEN_SEP, TOKEN_PAD
+from tinygpt import TinyGPT
 
-FEATURE_ORDER = list(zip(FEATURES, ["t", "h", "p", "w", "P25", "P10", "CO", "NO2", "AQI"]))
+def load_model(weights_path, device):
+    model = TinyGPT(VOCAB_SIZE, D_MODEL, N_HEAD, N_LAYER, D_FF, MAX_SEQ_LENGTH, DROPOUT)
+    model.load_state_dict(torch.load(weights_path, map_location=device, weights_only=True))
+    model.to(device)
+    model.eval()
+    return model
 
-def parse_hour(text):
-    nums = re.findall(r'\d+', text)
-    if len(nums) >= 9:
-        return [int(n) for n in nums[-9:]]
-    return None
-
-def denormalize_vals(scaled_list, params):
-    return {f: scaled / 100.0 * params[f]["range"] + params[f]["min"]
-            for f, scaled in zip(FEATURES, scaled_list)}
+def parse_tokens(tokens, params):
+    start = 0
+    while start < len(tokens) and tokens[start] >= 100:
+        start += 1
+    if start + N_FEATURES <= len(tokens):
+        vals = tokens[start:start + N_FEATURES]
+    else:
+        vals = []
+    if len(vals) != N_FEATURES:
+        return None
+    result = {}
+    for f, v in zip(FEATURES, vals):
+        result[f] = v / 100.0 * params[f]["range"] + params[f]["min"]
+    return result
 
 def run(data_dir):
-    print("[evaluate] Loading model and adapter...")
-    base = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
-    model = PeftModel.from_pretrained(base, ADAPTER_DIR)
-    tokenizer = AutoTokenizer.from_pretrained(ADAPTER_DIR)
+    print("[evaluate] Loading model...")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    model.eval()
+    model = load_model(os.path.join(MODEL_DIR, "best.pt"), device)
 
     with open(os.path.join(data_dir, "norm_params.json")) as f:
         params = json.load(f)
 
-    def load_lines(path):
-        with open(path, "r", encoding="utf-8") as f:
-            return [line.strip() for line in f if line.strip()]
-    X_val = load_lines(os.path.join(data_dir, "X_val.txt"))
-    y_val = load_lines(os.path.join(data_dir, "y_val.txt"))
+    X_val = torch.load(os.path.join(data_dir, "X_val.pt"))
+    y_val = torch.load(os.path.join(data_dir, "y_val.pt"))
 
     pred_list, actual_list = [], []
     print(f"  Running inference on {len(X_val)} validation samples...")
 
-    for i, (inp, actual_str) in enumerate(zip(X_val, y_val)):
-        prompt = f"{inp} | "
-        enc = tokenizer(prompt, return_tensors="pt", truncation=True, max_length=MAX_SEQ_LENGTH).to(device)
+    context_len = 1 + 12 * N_FEATURES
+    for i in range(len(X_val)):
+        inp = X_val[i:i+1, :context_len].to(device)
         with torch.no_grad():
-            out = model.generate(**enc, max_new_tokens=MAX_GEN_TOKENS, temperature=TEMPERATURE,
-                                 do_sample=True, pad_token_id=tokenizer.eos_token_id)
-        gen = tokenizer.decode(out[0], skip_special_tokens=True)
-        gen_part = gen[len(prompt):].strip()
+            out = model.generate(inp, max_new_tokens=N_FEATURES + 2, temperature=1.0)
+        gen_ids = out[0, context_len:].tolist()
+        gen_ids = [t for t in gen_ids if t < 100]
+        pred = parse_tokens(gen_ids[:N_FEATURES], params)
 
-        pred_nums = parse_hour(gen_part)
-        actual_nums = parse_hour(actual_str)
-        if pred_nums and actual_nums:
-            pred_list.append(denormalize_vals(pred_nums, params))
-            actual_list.append(denormalize_vals(actual_nums, params))
+        lbl = y_val[i].tolist()
+        actual_ids = [t for t in lbl if t >= 0 and t < 100]
+        actual = parse_tokens(actual_ids[:N_FEATURES], params)
+
+        if pred and actual:
+            pred_list.append(pred)
+            actual_list.append(actual)
+
+    if not pred_list:
+        print("  No valid predictions generated")
+        return {"mae_aqi": -1, "rmse_aqi": -1, "mae_pm": -1, "rmse_pm": -1}
 
     aqi_pred = np.array([p["aqi_index"] for p in pred_list])
     aqi_act = np.array([a["aqi_index"] for a in actual_list])

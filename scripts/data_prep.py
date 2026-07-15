@@ -1,12 +1,11 @@
 import json
 import pandas as pd
 import numpy as np
+import torch
 from pathlib import Path
 
-from config import DATA_FILE, LOCATION, FEATURES, TARGETS, CONTEXT_HOURS, TRAIN_SPLIT, RANDOM_SEED
-
-FEATURE_SHORT = ["t", "h", "p", "w", "P25", "P10", "CO", "NO2", "AQI"]
-FEATURE_ORDER = list(zip(FEATURES, FEATURE_SHORT))
+from config import DATA_FILE, LOCATION, FEATURES, CONTEXT_HOURS, TRAIN_SPLIT, \
+    TOKEN_START, TOKEN_SEP, TOKEN_PAD, MAX_SEQ_LENGTH, N_FEATURES, DATA_OUT_DIR
 
 def load_and_filter(path):
     df = pd.read_csv(path)
@@ -27,20 +26,30 @@ def compute_norm_params(df, features):
 def normalize(val, stats, f):
     return int(round((val - stats[f]["min"]) / stats[f]["range"] * 100))
 
-def denormalize(scaled, stats, f):
-    return scaled / 100.0 * stats[f]["range"] + stats[f]["min"]
-
-def make_token(row, stats):
-    return "_".join(str(normalize(row[f], stats, f)) for f, _ in FEATURE_ORDER)
+def row_to_tokens(row, stats):
+    return [normalize(row[f], stats, f) for f in FEATURES]
 
 def create_sequences(df, stats, context):
-    X, Y = [], []
+    input_ids_list, labels_list = [], []
     for i in range(len(df) - context):
-        inp_hours = [make_token(df.iloc[i + j], stats) for j in range(context)]
-        tgt_hour = make_token(df.iloc[i + context], stats)
-        X.append(f"In:{context} {' '.join(inp_hours)}")
-        Y.append(tgt_hour)
-    return X, Y
+        tokens = [TOKEN_START]
+        for j in range(context):
+            tokens.extend(row_to_tokens(df.iloc[i + j], stats))
+        tokens.append(TOKEN_SEP)
+        tgt = row_to_tokens(df.iloc[i + context], stats)
+        tokens.extend(tgt)
+
+        seq = torch.full((MAX_SEQ_LENGTH,), TOKEN_PAD, dtype=torch.long)
+        n = min(len(tokens), MAX_SEQ_LENGTH)
+        seq[:n] = torch.tensor(tokens[:n], dtype=torch.long)
+
+        lbl = torch.full((MAX_SEQ_LENGTH,), -100, dtype=torch.long)
+        input_end = 1 + context * N_FEATURES
+        lbl[input_end:n] = seq[input_end:n]
+
+        input_ids_list.append(seq)
+        labels_list.append(lbl)
+    return torch.stack(input_ids_list), torch.stack(labels_list)
 
 def run():
     print("[data_prep] Loading dataset...")
@@ -53,25 +62,21 @@ def run():
     print(f"  Normalization stats computed from training split")
 
     X_full, y_full = create_sequences(df, params, CONTEXT_HOURS)
-    X_train, X_val = X_full[:split_idx - CONTEXT_HOURS], X_full[split_idx - CONTEXT_HOURS:]
-    y_train, y_val = y_full[:split_idx - CONTEXT_HOURS], y_full[split_idx - CONTEXT_HOURS:]
+    train_sz = split_idx - CONTEXT_HOURS
+    X_train, X_val = X_full[:train_sz], X_full[train_sz:]
+    y_train, y_val = y_full[:train_sz], y_full[train_sz:]
     print(f"  Train sequences: {len(X_train)}, Val sequences: {len(X_val)}")
 
-    out_dir = Path(__file__).parent.parent / "data_prep_output"
-    out_dir.mkdir(exist_ok=True)
-    def save_lines(path, lines):
-        with open(path, "w", encoding="utf-8") as f:
-            for line in lines:
-                f.write(line + "\n")
-    save_lines(out_dir / "X_train.txt", X_train)
-    save_lines(out_dir / "X_val.txt", X_val)
-    save_lines(out_dir / "y_train.txt", y_train)
-    save_lines(out_dir / "y_val.txt", y_val)
-    with open(out_dir / "norm_params.json", "w") as f:
+    DATA_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    torch.save(X_train, DATA_OUT_DIR / "X_train.pt")
+    torch.save(y_train, DATA_OUT_DIR / "y_train.pt")
+    torch.save(X_val, DATA_OUT_DIR / "X_val.pt")
+    torch.save(y_val, DATA_OUT_DIR / "y_val.pt")
+    with open(DATA_OUT_DIR / "norm_params.json", "w") as f:
         json.dump(params, f)
 
-    print(f"  Saved to {out_dir}/")
-    return str(out_dir)
+    print(f"  Saved to {DATA_OUT_DIR}/")
+    return str(DATA_OUT_DIR)
 
 if __name__ == "__main__":
     run()
