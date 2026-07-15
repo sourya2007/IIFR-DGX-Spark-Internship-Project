@@ -1,6 +1,8 @@
 # Generated outputs
+output/
 data_prep_output/
 aqi_model/
+stock_model/
 plots/
 
 # Dataset (download separately or uncomment to track)
