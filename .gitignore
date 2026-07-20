@@ -1,6 +1,7 @@
 # Generated outputs
 output/
 data_prep_output/
+dgx_data/
 aqi_model/
 stock_model/
 plots/
