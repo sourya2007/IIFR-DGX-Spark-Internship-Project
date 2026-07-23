@@ -2,6 +2,9 @@
 torch>=2.5.0
 numpy>=1.24.0
 
+# Web UI (DGX Spark demo)
+gradio>=5.0.0
+
 # Data & plotting
 pandas>=2.0.0
 matplotlib>=3.7.0

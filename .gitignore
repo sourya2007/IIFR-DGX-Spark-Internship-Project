@@ -2,6 +2,7 @@
 output/
 data_prep_output/
 dgx_data/
+dgx_models/
 aqi_model/
 stock_model/
 plots/
